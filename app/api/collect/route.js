@@ -19,8 +19,6 @@ function getSafeTag(tag, xmlString) {
     const match = xmlString.match(regex);
     return match ? match[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1').trim() : '';
 }
-
-// 주소 텍스트를 기반으로 지역 매핑 ("전남광주"로 통합 수정 완료)
 function extractArea(address) {
     if (!address) return '기타';
     if (address.includes('서울')) return '서울';
@@ -42,6 +40,7 @@ function extractArea(address) {
     return '기타';
 }
 
+// 💡 공연 데이터(KOPIS) 네이버 검색 링크로 수정
 async function fetchKopis() {
     const KOPIS_KEY = '928033e0198e4bdcb10e255f2ec72f85';
     const dStart = new Date(); 
@@ -59,12 +58,13 @@ async function fetchKopis() {
                 const mt20id = getSafeTag('mt20id', match[1]);
                 const startStr = getSafeTag('prfpdfrom', match[1]).replace(/\./g, '');
                 const endStr = getSafeTag('prfpdto', match[1]).replace(/\./g, '');
-                if (getSafeTag('prfnm', match[1]) && isValidDate(startStr, endStr, stdate)) {
+                const title = getSafeTag('prfnm', match[1]);
+                if (title && isValidDate(startStr, endStr, stdate)) {
                     results.push({
-                        id: `kopis-${mt20id}`, title: getSafeTag('prfnm', match[1]), category: "공연",
+                        id: `kopis-${mt20id}`, title: title, category: "공연",
                         location: getSafeTag('fcltynm', match[1]), start_date: startStr, end_date: endStr, 
                         price: "상세페이지 참조", source: "KOPIS", area: extractArea(regionName), 
-                        url: `http://www.kopis.or.kr/por/db/pblprfr/pblprfrView.do?mt20id=${mt20id}`
+                        url: `https://search.naver.com/search.naver?query=${encodeURIComponent(title)}` // 🚀 네이버 검색으로 강제 변경
                     });
                 }
             });
@@ -73,6 +73,7 @@ async function fetchKopis() {
     return results;
 }
 
+// 💡 축제 데이터 (이미 네이버 검색 적용 중)
 async function fetchStdFestivals(key, todayStr) {
     const url = `http://api.data.go.kr/openapi/tn_pubr_public_cltur_fstvl_api?serviceKey=${key}&pageNo=1&numOfRows=100&type=json`;
     const results = [];
@@ -87,7 +88,7 @@ async function fetchStdFestivals(key, todayStr) {
                         id: `stdfest-${item.fstvlNm}`, title: item.fstvlNm, category: "축제",
                         location: item.opar || item.rdnmadr || '장소 확인', start_date: start, end_date: end,
                         price: item.auspcInsttNm ? `${item.auspcInsttNm} 주관` : "확인 필요", source: "전국문화축제",
-                        area: extractArea(item.rdnmadr || item.lnmadr), url: item.homepageUrl || `https://search.naver.com/search.naver?query=${encodeURIComponent(item.fstvlNm)}`
+                        area: extractArea(item.rdnmadr || item.lnmadr), url: `https://search.naver.com/search.naver?query=${encodeURIComponent(item.fstvlNm)}`
                     });
                 }
             });
@@ -96,6 +97,7 @@ async function fetchStdFestivals(key, todayStr) {
     return results;
 }
 
+// 💡 교육 데이터 (이미 네이버 검색 적용 중)
 async function fetchStdEdu(key, todayStr) {
     const url = `http://api.data.go.kr/openapi/tn_pubr_public_lifelong_lrn_lctre_api?serviceKey=${key}&pageNo=1&numOfRows=100&type=json`;
     const results = [];
@@ -119,6 +121,7 @@ async function fetchStdEdu(key, todayStr) {
     return results;
 }
 
+// 💡 관광공사 축제 데이터 네이버 검색으로 변경
 async function fetchTourApi(key, todayStr) {
     const url = `https://apis.data.go.kr/B551011/KorService1/searchFestival1?serviceKey=${key}&numOfRows=100&pageNo=1&MobileOS=ETC&MobileApp=KidsApp&_type=json&eventStartDate=${todayStr}`;
     const results = [];
@@ -132,7 +135,7 @@ async function fetchTourApi(key, todayStr) {
                     id: `tour-${item.contentid}`, title: item.title, category: "축제",
                     location: item.addr1 || '상세페이지 참조', start_date: item.eventstartdate || '', end_date: item.eventenddate || '',
                     price: "상세페이지 참조", source: "한국관광공사", area: extractArea(item.addr1),
-                    url: `https://korean.visitkorea.or.kr/detail/fes_detail.do?cotid=${item.contentid}`
+                    url: `https://search.naver.com/search.naver?query=${encodeURIComponent(item.title)}` // 🚀 수정
                 });
             });
         }
@@ -149,11 +152,12 @@ async function fetchBusanApi(key, todayStr) {
             const res = await fetch(url); const json = await res.json();
             const items = json.getFestivalKr?.item || json.getBusanCulture?.item || [];
             items.forEach(item => {
+                const title = item.TITLE || item.res_title;
                 results.push({
-                    id: `busan-${item.UC_SEQ || item.res_no}`, title: item.TITLE || item.res_title, category: cat,
+                    id: `busan-${item.UC_SEQ || item.res_no}`, title: title, category: cat,
                     location: item.PLACE || item.res_loc || '부산', start_date: todayStr, end_date: todayStr, 
                     price: item.USAGE_FEE || item.res_fee || '상세페이지 참조', source: "부산광역시", area: "부산",
-                    url: item.HOMEPAGE_URL || `https://search.naver.com/search.naver?query=${encodeURIComponent(item.TITLE || item.res_title)}`
+                    url: `https://search.naver.com/search.naver?query=${encodeURIComponent(title)}` // 🚀 네이버 강제 적용
                 });
             });
         } catch (e) { }
@@ -176,7 +180,7 @@ async function fetchMuseums(key, todayStr) {
                     id: `museum-${item.fcltyNm}`, title: item.fcltyNm, category: "전시/관람",
                     location: item.rdnmadr || item.lnmadr || '장소 확인', start_date: todayStr, end_date: nextYearStr,
                     price: childPrice, source: "전국박물관미술관", area: extractArea(item.rdnmadr || item.lnmadr),
-                    url: item.homepageUrl || `https://search.naver.com/search.naver?query=${encodeURIComponent(item.fcltyNm)}`
+                    url: `https://search.naver.com/search.naver?query=${encodeURIComponent(item.fcltyNm)}` // 🚀 수정
                 });
             });
         }
@@ -197,7 +201,7 @@ async function fetchRecreationalForests(key, todayStr) {
                     id: `forest-${item.frestNm}`, title: `🌲 ${item.frestNm}`, category: "캠핑/휴양",
                     location: item.rdnmadr || item.lnmadr || '위치 확인', start_date: todayStr, end_date: nextYearStr,
                     price: item.useChrge || '홈페이지 참조', source: "전국휴양림", area: extractArea(item.rdnmadr || item.lnmadr),
-                    url: item.homepageUrl || `https://search.naver.com/search.naver?query=${encodeURIComponent(item.frestNm)}`
+                    url: `https://search.naver.com/search.naver?query=${encodeURIComponent(item.frestNm)}` // 🚀 수정
                 });
             });
         }
@@ -218,7 +222,7 @@ async function fetchRuralVillages(key, todayStr) {
                     id: `rural-${item.vllgNm}`, title: `🚜 ${item.vllgNm} 농촌체험마을`, category: "체험/야외",
                     location: item.rdnmadr || item.lnmadr || '위치 확인', start_date: todayStr, end_date: nextYearStr,
                     price: item.exprProgrmNm ? `체험: ${item.exprProgrmNm}` : '프로그램 별도 확인', source: "농촌체험마을", area: extractArea(item.rdnmadr || item.lnmadr),
-                    url: item.homepageUrl || `https://search.naver.com/search.naver?query=${encodeURIComponent(item.vllgNm)}`
+                    url: `https://search.naver.com/search.naver?query=${encodeURIComponent(item.vllgNm)}` // 🚀 수정
                 });
             });
         }
@@ -243,7 +247,7 @@ async function fetchLocalCampgrounds(key, todayStr) {
                         id: `camp-${item.facltNm}`, title: `⛺ ${item.facltNm}`, category: "캠핑/휴양",
                         location: addr || '위치 확인', start_date: todayStr, end_date: nextYearStr, 
                         price: item.useChrge || '상세페이지 참조', source: localTag, area: extractArea(addr),
-                        url: item.homepageUrl || `https://search.naver.com/search.naver?query=${encodeURIComponent(item.facltNm)}`
+                        url: `https://search.naver.com/search.naver?query=${encodeURIComponent(item.facltNm)}` // 🚀 수정
                     });
                 }
             });
@@ -276,7 +280,6 @@ export async function GET() {
             }
         });
 
-        // 중복 ID 제거 로직
         const uniqueEvents = Array.from(new Map(allEvents.map(item => [item.id, item])).values());
 
         if (uniqueEvents.length === 0) {
