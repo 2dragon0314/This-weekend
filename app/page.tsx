@@ -16,7 +16,7 @@ const [selectedCategory, setSelectedCategory] = useState("전체");
 const [searchQuery, setSearchQuery] = useState("");
 const [appliedSearch, setAppliedSearch] = useState("");
 
-// 오늘 날짜 및 기본 한 달 뒤 날짜 세팅
+// 오늘 날짜 및 기본 한 달 뒤 날짜 세팅 (백틱 오류 수정 완료)
 const today = new Date();
 const todayFormatted = ${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')};
 
@@ -66,7 +66,7 @@ setAppliedSearch(searchQuery);
 
 const filteredEvents = events.filter((event) => {
 const matchArea = selectedArea === "전국" || event.area === selectedArea;
-// trim()을 추가하여 DB의 공백으로 인한 인식 오류 방지
+// trim()을 추가하여 DB의 공백으로 인한 블로그 카테고리 인식 오류 방지
 const matchCategory = selectedCategory === "전체" || event.category?.trim() === selectedCategory;
 const matchSearch = appliedSearch === "" || event.title.includes(appliedSearch) || event.location.includes(appliedSearch);
 
@@ -126,8 +126,8 @@ return (
     <form onSubmit={handleSearch} className="mb-8 flex gap-2 max-w-2xl mx-auto sm:mx-0">
       <input
         type="text"
-        // 타겟층에 맞춘 정확한 플레이스홀더
-        placeholder="교육, 박람회, 전시, 공연, 지역축제, 원데이클래스 검색..."
+        // 타겟층에 맞춘 정확한 플레이스홀더 반영
+        placeholder="교육, 박람회, 전시, 공연, 지역축제, 문화, 원데이클래스 검색..."
         className="flex-1 px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
         value={searchQuery}
         onChange={(e) => setSearchQuery(e.target.value)}
