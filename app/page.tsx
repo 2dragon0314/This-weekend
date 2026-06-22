@@ -21,7 +21,6 @@ export default function Home() {
     "울산", "세종", "경기", "강원", "충북", "충남", "전북", "경북", "경남", "제주"
   ];
 
-  // 💡 '블로그 추천' 카테고리가 새로 추가되었습니다!
   const categories = [
     "전체", "공연", "전시/관람", "축제", "교육", "체험/야외", "캠핑/휴양", "블로그 추천"
   ];
@@ -33,7 +32,6 @@ export default function Home() {
   async function fetchEvents() {
     setLoading(true);
     try {
-      // Supabase에서 데이터 가져오기 (캐시를 무시하고 항상 최신 데이터 호출)
       const { data, error } = await supabase
         .from("events")
         .select("*")
@@ -48,19 +46,14 @@ export default function Home() {
     }
   }
 
-  // 검색 버튼 누를 때 실행
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     setAppliedSearch(searchQuery);
   };
 
-  // 날짜 필터링 및 카테고리/검색어 필터링 로직
   const filteredEvents = events.filter((event) => {
-    // 1. 지역 필터
     const matchArea = selectedArea === "전국" || event.area === selectedArea;
-    // 2. 카테고리 필터
     const matchCategory = selectedCategory === "전체" || event.category === selectedCategory;
-    // 3. 검색어 필터
     const matchSearch = appliedSearch === "" || event.title.includes(appliedSearch) || event.location.includes(appliedSearch);
     
     return matchArea && matchCategory && matchSearch;
@@ -70,7 +63,6 @@ export default function Home() {
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200 p-4 sm:p-8">
       <div className="max-w-6xl mx-auto">
         
-        {/* 헤더 타이틀 */}
         <header className="mb-8 text-center sm:text-left">
           <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-blue-600 dark:text-blue-400 mb-2">
             이번 주말 나들이 🎈
@@ -80,7 +72,6 @@ export default function Home() {
           </p>
         </header>
 
-        {/* 검색창 */}
         <form onSubmit={handleSearch} className="mb-8 flex gap-2 max-w-md">
           <input
             type="text"
@@ -97,7 +88,6 @@ export default function Home() {
           </button>
         </form>
 
-        {/* 지역 필터 버튼들 */}
         <div className="mb-6">
           <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-3">지역 선택</h2>
           <div className="flex flex-wrap gap-2">
@@ -117,7 +107,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* 카테고리 필터 버튼들 */}
         <div className="mb-8">
           <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-3">나들이 종류</h2>
           <div className="flex flex-wrap gap-2">
@@ -137,7 +126,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* 리스트 결과 영역 */}
         {loading ? (
           <div className="flex justify-center items-center py-20">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
@@ -209,13 +197,3 @@ export default function Home() {
     </div>
   );
 }
-```
-
-### 🛠️ 터미널에서 마지막 배포하기!
-
-코드를 저장(`Ctrl` + `S`)하셨다면, 터미널(까만 창)에 늘 하던 대로 3줄의 명령어를 차례대로 쳐주세요.
-
-```bash
-git add .
-git commit -m "UI에 블로그 추천 카테고리 추가 및 검색 개선"
-git push origin main
