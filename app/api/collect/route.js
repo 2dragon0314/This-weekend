@@ -1,6 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
 
+// 💡 Vercel의 작업 시간을 60초로 늘려주는 코드 (Timeout 방지)
+export const maxDuration = 60;
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -40,13 +43,12 @@ function extractArea(address) {
     return '기타';
 }
 
-// 공연 외 일반 데이터들의 링크를 처리하는 기본 스마트 링크 함수 (인터파크 강제 이동 제거)
 function getSmartLink(providedUrl, title) {
     if (providedUrl && typeof providedUrl === 'string' && providedUrl.startsWith('http')) return providedUrl;
     return `https://search.naver.com/search.naver?query=${encodeURIComponent(title)}`;
 }
 
-// 💡 1. KOPIS 전용: 공연 목록 + 공연 상세 API를 모두 활용하는 업그레이드 함수
+// 💡 1. KOPIS 전용: 포스터 이미지(image_url) 추가
 async function fetchKopis() {
     const KOPIS_KEY = '928033e0198e4bdcb10e255f2ec72f85';
     const dStart = new Date(); const stdate = `${dStart.getFullYear()}${String(dStart.getMonth() + 1).padStart(2, '0')}${String(dStart.getDate()).padStart(2, '0')}`;
@@ -55,36 +57,30 @@ async function fetchKopis() {
     let allResults = [];
 
     for (const [code, regionName] of Object.entries(regions)) {
-        // 상세 API까지 찔러야 하므로, Vercel 시간초과 방지를 위해 rows를 30개로 안정화합니다.
         const url = `http://www.kopis.or.kr/openApi/restful/pblprfr?service=${KOPIS_KEY}&stdate=${stdate}&eddate=${eddate}&cpage=1&rows=30&signgucode=${code}`;
         try {
             const res = await fetch(url); const xmlText = await res.text();
             const matches = [...xmlText.matchAll(/<db>([\s\S]*?)<\/db>/gi)];
             
-            // 공연 목록을 돌면서 동시에 각각의 '상세 정보(예매처)'를 가져옵니다.
             const kopisPromises = matches.map(async match => {
                 const mt20id = getSafeTag('mt20id', match[1]); 
                 const startStr = getSafeTag('prfpdfrom', match[1]).replace(/\./g, '');
                 const endStr = getSafeTag('prfpdto', match[1]).replace(/\./g, ''); 
                 const title = getSafeTag('prfnm', match[1]);
+                const poster = getSafeTag('poster', match[1]); // 💡 포스터 주소 추출
                 
                 if (title && isValidDate(startStr, endStr, stdate)) {
                     let finalUrl = '';
-                    
                     try {
-                        // 공연 상세 API 호출
                         const detailUrl = `http://www.kopis.or.kr/openApi/restful/pblprfr/${mt20id}?service=${KOPIS_KEY}`;
                         const detailRes = await fetch(detailUrl);
                         const detailXml = await detailRes.text();
-                        
-                        // <relurl> (예매처 URL) 태그 안의 주소 추출
                         const relurlMatch = detailXml.match(/<relurl>([\s\S]*?)<\/relurl>/i);
                         if (relurlMatch && relurlMatch[1]) {
                             finalUrl = relurlMatch[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1').trim();
                         }
                     } catch(e) {}
 
-                    // 예매처 정보가 없다면 요청하신 대로 네이버 검색으로 깔끔하게 대체!
                     if (!finalUrl || !finalUrl.startsWith('http')) {
                         finalUrl = `https://search.naver.com/search.naver?query=${encodeURIComponent(title + ' 예매')}`;
                     }
@@ -93,13 +89,12 @@ async function fetchKopis() {
                         id: `kopis-${mt20id}`, title: title, category: "공연", 
                         location: getSafeTag('fcltynm', match[1]), start_date: startStr, end_date: endStr, 
                         price: "상세페이지 참조", source: "KOPIS", area: extractArea(regionName), 
-                        url: finalUrl 
+                        url: finalUrl,
+                        image_url: poster // 💡 데이터베이스에 이미지 저장
                     };
                 }
                 return null;
             });
-
-            // 지역별 30개의 상세 정보 탐색이 끝날 때까지 기다렸다가 합칩니다.
             const regionResults = await Promise.all(kopisPromises);
             allResults = [...allResults, ...regionResults.filter(item => item !== null)];
         } catch (err) { }
@@ -107,15 +102,79 @@ async function fetchKopis() {
     return allResults;
 }
 
-// ===== 기존 공공데이터/네이버 수집 함수들 (이전과 동일) =====
+// 💡 2. 네이버 지역(Local) 검색 추가: 공식 업체, 원데이클래스, 공방 등 공식 웹사이트 연결
+async function fetchNaverLocalOfficial(clientId, clientSecret) {
+    if (!clientId || !clientSecret) return [];
+    
+    // 주요 거점 위주로 검색
+    const regionConfigs = [
+        { search: '서울', area: '서울' }, { search: '부산', area: '부산' }, { search: '경기', area: '경기' }
+    ];
+    // 아이들이 체험할 만한 실제 업종 키워드
+    const keywords = [
+        { q: '어린이 원데이클래스', cat: '원데이클래스' },
+        { q: '키즈 체험 공방', cat: '체험/야외' }
+    ];
+
+    const d = new Date(); const startStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    d.setMonth(d.getMonth() + 1); const endStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    
+    const results = [];
+
+    for (const config of regionConfigs) {
+        for (const kw of keywords) {
+            const url = `https://openapi.naver.com/v1/search/local.json?query=${encodeURIComponent(`${config.search} ${kw.q}`)}&display=5&sort=random`;
+            try {
+                const res = await fetch(url, { headers: { 'X-Naver-Client-Id': clientId, 'X-Naver-Client-Secret': clientSecret } });
+                const data = await res.json();
+                if (data.items) {
+                    data.items.forEach((item, idx) => {
+                        const cleanTitle = item.title.replace(/<[^>]*>?/g, ''); // 태그 제거
+                        // 공식 링크(item.link)가 없으면 네이버 플레이스 검색으로 연결
+                        const officialLink = item.link && item.link.startsWith('http') ? item.link : `https://map.naver.com/v5/search/${encodeURIComponent(cleanTitle)}`;
+                        
+                        results.push({
+                            id: `naver-local-${config.search}-${kw.cat}-${idx}`, 
+                            title: `[공식] ${cleanTitle}`, 
+                            category: kw.cat, 
+                            location: item.roadAddress || item.address || "위치 확인", 
+                            start_date: startStr, 
+                            end_date: endStr, 
+                            price: "업체 문의", 
+                            source: "네이버 등록업체", 
+                            area: config.area, 
+                            url: officialLink,
+                            image_url: "" // 지역 검색은 이미지를 안 주므로 비워둠
+                        });
+                    });
+                }
+            } catch (e) {}
+        }
+    }
+    return results;
+}
+
+// 💡 3. 한국관광공사 (이미지 추가)
+async function fetchTourApi(key, todayStr) {
+    const url = `https://apis.data.go.kr/B551011/KorService1/searchFestival1?serviceKey=${key}&numOfRows=100&pageNo=1&MobileOS=ETC&MobileApp=KidsApp&_type=json&eventStartDate=${todayStr}`; const results = [];
+    try {
+        const res = await fetch(url); const json = await res.json(); const items = json.response?.body?.items?.item;
+        if (items) {
+            const arr = Array.isArray(items) ? items : [items];
+            arr.forEach(item => results.push({ 
+                id: `tour-${item.contentid}`, title: item.title, category: "축제", 
+                location: item.addr1 || '상세페이지 참조', start_date: item.eventstartdate || '', end_date: item.eventenddate || '', 
+                price: "상세페이지 참조", source: "한국관광공사", area: extractArea(item.addr1), url: getSmartLink('', item.title),
+                image_url: item.firstimage || '' // 💡 축제 썸네일 추가
+            }));
+        }
+    } catch (e) { } return results;
+}
+
+// 기존 네이버 블로그 검색 (핫플 추천용 유지)
 async function fetchNaverBlogs(clientId, clientSecret) {
     if (!clientId || !clientSecret) return [];
-    const regionConfigs = [
-        { search: '서울', area: '서울' }, { search: '부산', area: '부산' }, { search: '대구', area: '대구' }, { search: '인천', area: '인천' },
-        { search: '광주', area: '전남광주' }, { search: '대전', area: '대전' }, { search: '울산', area: '울산' }, { search: '세종', area: '세종' },
-        { search: '경기', area: '경기' }, { search: '강원', area: '강원' }, { search: '충북', area: '충북' }, { search: '충남', area: '충남' },
-        { search: '전북', area: '전북' }, { search: '전남', area: '전남광주' }, { search: '경북', area: '경북' }, { search: '경남', area: '경남' }, { search: '제주', area: '제주' }
-    ];
+    const regionConfigs = [{ search: '서울', area: '서울' }, { search: '부산', area: '부산' }, { search: '대구', area: '대구' }, { search: '제주', area: '제주' }];
     const d = new Date(); const startStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
     d.setMonth(d.getMonth() + 1); const endStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
     const fetchPromises = regionConfigs.map(async (config, index) => {
@@ -125,7 +184,7 @@ async function fetchNaverBlogs(clientId, clientSecret) {
             const data = await res.json();
             if (data.items) {
                 return data.items.map((item, itemIndex) => ({
-                    id: `naver-${config.search}-${itemIndex}`, title: `[${config.search} 추천] ` + item.title.replace(/<[^>]*>?/g, ''), category: "블로그 추천", location: "상세페이지 확인", start_date: startStr, end_date: endStr, price: "무료~유료", source: "네이버 검색", area: config.area, url: item.link
+                    id: `naver-blog-${config.search}-${itemIndex}`, title: `[핫플] ` + item.title.replace(/<[^>]*>?/g, ''), category: "블로그 추천", location: "블로그 본문 확인", start_date: startStr, end_date: endStr, price: "무료~유료", source: "네이버 블로그", area: config.area, url: item.link, image_url: ""
                 }));
             }
         } catch (e) {} return [];
@@ -140,7 +199,7 @@ async function fetchStdFestivals(key, todayStr) {
         if (json.response?.body?.items) {
             json.response.body.items.forEach(item => {
                 const start = (item.fstvlStartDate || '').replace(/-/g, ''); const end = (item.fstvlEndDate || '').replace(/-/g, '');
-                if (isValidDate(start, end, todayStr)) results.push({ id: `stdfest-${item.fstvlNm}`, title: item.fstvlNm, category: "축제", location: item.opar || item.rdnmadr || '장소 확인', start_date: start, end_date: end, price: item.auspcInsttNm ? `${item.auspcInsttNm} 주관` : "확인 필요", source: "전국문화축제", area: extractArea(item.rdnmadr || item.lnmadr), url: getSmartLink(item.homepageUrl, item.fstvlNm) });
+                if (isValidDate(start, end, todayStr)) results.push({ id: `stdfest-${item.fstvlNm}`, title: item.fstvlNm, category: "축제", location: item.opar || item.rdnmadr || '장소 확인', start_date: start, end_date: end, price: item.auspcInsttNm ? `${item.auspcInsttNm} 주관` : "확인 필요", source: "전국문화축제", area: extractArea(item.rdnmadr || item.lnmadr), url: getSmartLink(item.homepageUrl, item.fstvlNm), image_url: "" });
             });
         }
     } catch (e) { } return results;
@@ -152,31 +211,10 @@ async function fetchStdEdu(key, todayStr) {
         if (json.response?.body?.items) {
             json.response.body.items.forEach(item => {
                 const start = (item.edcStartDaycnt || '').replace(/-/g, ''); const end = (item.edcEndDaycnt || '').replace(/-/g, '');
-                if (item.lctreNm && isValidDate(start, end, todayStr)) results.push({ id: `stdedu-${item.lctreNm}`, title: item.lctreNm, category: "교육", location: item.edcPlc || '장소 확인', start_date: start, end_date: end, price: item.lctreCost === '0' ? '무료' : (item.lctreCost || '유료'), source: "전국평생학습", area: extractArea(item.rdnmadr || item.edcPlc), url: getSmartLink(item.edcInsttUrl || item.homepageUrl, item.lctreNm) });
+                if (item.lctreNm && isValidDate(start, end, todayStr)) results.push({ id: `stdedu-${item.lctreNm}`, title: item.lctreNm, category: "교육", location: item.edcPlc || '장소 확인', start_date: start, end_date: end, price: item.lctreCost === '0' ? '무료' : (item.lctreCost || '유료'), source: "전국평생학습", area: extractArea(item.rdnmadr || item.edcPlc), url: getSmartLink(item.edcInsttUrl || item.homepageUrl, item.lctreNm), image_url: "" });
             });
         }
     } catch (e) { } return results;
-}
-async function fetchTourApi(key, todayStr) {
-    const url = `https://apis.data.go.kr/B551011/KorService1/searchFestival1?serviceKey=${key}&numOfRows=100&pageNo=1&MobileOS=ETC&MobileApp=KidsApp&_type=json&eventStartDate=${todayStr}`; const results = [];
-    try {
-        const res = await fetch(url); const json = await res.json(); const items = json.response?.body?.items?.item;
-        if (items) {
-            const arr = Array.isArray(items) ? items : [items];
-            arr.forEach(item => results.push({ id: `tour-${item.contentid}`, title: item.title, category: "축제", location: item.addr1 || '상세페이지 참조', start_date: item.eventstartdate || '', end_date: item.eventenddate || '', price: "상세페이지 참조", source: "한국관광공사", area: extractArea(item.addr1), url: getSmartLink('', item.title) }));
-        }
-    } catch (e) { } return results;
-}
-async function fetchBusanApi(key, todayStr) {
-    const festUrl = `http://apis.data.go.kr/6260000/FestivalService/getFestivalKr?serviceKey=${key}&pageNo=1&numOfRows=50&resultType=json`;
-    const cultUrl = `http://apis.data.go.kr/6260000/BusanCultureInfoService/getBusanCulture?serviceKey=${key}&pageNo=1&numOfRows=50&resultType=json`; const results = [];
-    const fetchData = async (url, cat) => {
-        try {
-            const res = await fetch(url); const json = await res.json(); const items = json.getFestivalKr?.item || json.getBusanCulture?.item || [];
-            items.forEach(item => results.push({ id: `busan-${item.UC_SEQ || item.res_no}`, title: item.TITLE || item.res_title, category: cat, location: item.PLACE || item.res_loc || '부산', start_date: todayStr, end_date: todayStr, price: item.USAGE_FEE || item.res_fee || '상세페이지 참조', source: "부산광역시", area: "부산", url: getSmartLink(item.HOMEPAGE_URL || item.res_url, item.TITLE || item.res_title) }));
-        } catch (e) { }
-    };
-    await Promise.all([fetchData(festUrl, "축제"), fetchData(cultUrl, "원데이클래스")]); return results;
 }
 async function fetchMuseums(key, todayStr) {
     const url = `http://api.data.go.kr/openapi/tn_pubr_public_museum_artgr_info_api?serviceKey=${key}&pageNo=1&numOfRows=100&type=json`; const results = [];
@@ -184,46 +222,9 @@ async function fetchMuseums(key, todayStr) {
         const res = await fetch(url); const json = await res.json();
         if (json.response?.body?.items) {
             const d = new Date(); d.setFullYear(d.getFullYear() + 1); const nextYearStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-            json.response.body.items.forEach(item => results.push({ id: `museum-${item.fcltyNm}`, title: item.fcltyNm, category: "전시/관람", location: item.rdnmadr || item.lnmadr || '장소 확인', start_date: todayStr, end_date: nextYearStr, price: item.childChrge === '0' ? '어린이 무료' : (item.childChrge ? `어린이 ${item.childChrge}원` : '요금 확인'), source: "전국박물관미술관", area: extractArea(item.rdnmadr || item.lnmadr), url: getSmartLink(item.homepageUrl, item.fcltyNm) }));
+            json.response.body.items.forEach(item => results.push({ id: `museum-${item.fcltyNm}`, title: item.fcltyNm, category: "전시/관람", location: item.rdnmadr || item.lnmadr || '장소 확인', start_date: todayStr, end_date: nextYearStr, price: item.childChrge === '0' ? '어린이 무료' : (item.childChrge ? `어린이 ${item.childChrge}원` : '요금 확인'), source: "전국박물관미술관", area: extractArea(item.rdnmadr || item.lnmadr), url: getSmartLink(item.homepageUrl, item.fcltyNm), image_url: "" }));
         }
     } catch (e) { } return results;
-}
-async function fetchRecreationalForests(key, todayStr) {
-    const url = `http://api.data.go.kr/openapi/tn_pubr_public_frest_recreat_info_api?serviceKey=${key}&pageNo=1&numOfRows=100&type=json`; const results = [];
-    try {
-        const res = await fetch(url); const json = await res.json();
-        if (json.response?.body?.items) {
-            const d = new Date(); d.setFullYear(d.getFullYear() + 1); const nextYearStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-            json.response.body.items.forEach(item => results.push({ id: `forest-${item.frestNm}`, title: `🌲 ${item.frestNm}`, category: "캠핑/휴양", location: item.rdnmadr || item.lnmadr || '위치 확인', start_date: todayStr, end_date: nextYearStr, price: item.useChrge || '홈페이지 참조', source: "전국휴양림", area: extractArea(item.rdnmadr || item.lnmadr), url: getSmartLink(item.homepageUrl, item.frestNm) }));
-        }
-    } catch (e) { } return results;
-}
-async function fetchRuralVillages(key, todayStr) {
-    const url = `http://api.data.go.kr/openapi/tn_pubr_public_rur_exper_recrt_vllg_api?serviceKey=${key}&pageNo=1&numOfRows=100&type=json`; const results = [];
-    try {
-        const res = await fetch(url); const json = await res.json();
-        if (json.response?.body?.items) {
-            const d = new Date(); d.setFullYear(d.getFullYear() + 1); const nextYearStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-            json.response.body.items.forEach(item => results.push({ id: `rural-${item.vllgNm}`, title: `🚜 ${item.vllgNm} 농촌체험마을`, category: "체험/야외", location: item.rdnmadr || item.lnmadr || '위치 확인', start_date: todayStr, end_date: nextYearStr, price: item.exprProgrmNm ? `체험: ${item.exprProgrmNm}` : '프로그램 별도 확인', source: "농촌체험마을", area: extractArea(item.rdnmadr || item.lnmadr), url: getSmartLink(item.homepageUrl, item.vllgNm) }));
-        }
-    } catch (e) { } return results;
-}
-async function fetchLocalCampgrounds(key, todayStr) {
-    const jeonnamUrl = `http://api.data.go.kr/openapi/tn_pubr_public_campgn_api?serviceKey=${key}&pageNo=1&numOfRows=50&type=json`; 
-    const gyeongnamUrl = `http://api.data.go.kr/openapi/tn_pubr_public_campgn_api?serviceKey=${key}&pageNo=2&numOfRows=50&type=json`; const results = [];
-    const d = new Date(); d.setFullYear(d.getFullYear() + 1); const nextYearStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-    const fetchData = async (url, localTag) => {
-        try {
-            const res = await fetch(url); const json = await res.json(); const items = json.response?.body?.items || [];
-            items.forEach(item => {
-                const addr = item.rdnmadr || item.lnmadr || '';
-                if (addr.includes('전남') || addr.includes('전라남도') || addr.includes('경남') || addr.includes('경상남도')) {
-                    results.push({ id: `camp-${item.facltNm}`, title: `⛺ ${item.facltNm}`, category: "캠핑/휴양", location: addr || '위치 확인', start_date: todayStr, end_date: nextYearStr, price: item.useChrge || '상세페이지 참조', source: localTag, area: extractArea(addr), url: getSmartLink(item.homepageUrl, item.facltNm) });
-                }
-            });
-        } catch (e) { }
-    };
-    await Promise.all([fetchData(jeonnamUrl, "전남_텐트촌"), fetchData(gyeongnamUrl, "경남_야영장")]); return results;
 }
 
 export async function GET() {
@@ -238,12 +239,9 @@ export async function GET() {
             fetchStdFestivals(DATA_KEY, todayStr),
             fetchStdEdu(DATA_KEY, todayStr),
             fetchTourApi(DATA_KEY, todayStr),
-            fetchBusanApi(DATA_KEY, todayStr),
             fetchMuseums(DATA_KEY, todayStr),
-            fetchRecreationalForests(DATA_KEY, todayStr),
-            fetchRuralVillages(DATA_KEY, todayStr),
-            fetchLocalCampgrounds(DATA_KEY, todayStr),
-            fetchNaverBlogs(NAVER_ID, NAVER_SECRET)
+            fetchNaverBlogs(NAVER_ID, NAVER_SECRET),
+            fetchNaverLocalOfficial(NAVER_ID, NAVER_SECRET) // 💡 네이버 공식 업체(지역) 검색 추가!
         ]);
 
         let allEvents = [];
@@ -261,7 +259,7 @@ export async function GET() {
 
         return NextResponse.json({ 
             success: true, 
-            message: `성공! KOPIS 상세 및 네이버 포함 총 ${uniqueEvents.length}개 적재 완료.` 
+            message: `성공! KOPIS(포스터), 관광공사, 네이버공식업체 포함 총 ${uniqueEvents.length}개 적재 완료.` 
         });
     } catch (error) {
         return NextResponse.json({ success: false, error: error.message }, { status: 500 });
